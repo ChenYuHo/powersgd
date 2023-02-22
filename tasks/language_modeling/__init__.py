@@ -293,7 +293,8 @@ def define_model(TEXT, rnn_n_hidden=650, rnn_n_layers=3, rnn_tie_weights=True, d
 
 
 def _get_text():
-    spacy_en = spacy.load("en")
+    spacy_en = spacy.load("en_core_web_sm")
+    #spacy_en = spacy.load("en")
     spacy_en.tokenizer.add_special_case("<eos>", [{ORTH: "<eos>"}])
     spacy_en.tokenizer.add_special_case("<bos>", [{ORTH: "<bos>"}])
     spacy_en.tokenizer.add_special_case("<unk>", [{ORTH: "<unk>"}])

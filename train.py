@@ -12,7 +12,15 @@ import gradient_reducers
 import tasks
 from mean_accumulator import MeanAccumulator
 from timer import Timer
+try:
+    import wandb
+except ModuleNotFoundError:
+    class wandb:
+        @classmethod
+        def log(cls, logs=None, step=None, commit=None):
+            pass
 
+global_step = 1
 """
 When you run this script, it uses the default parameters below.
 To change them, you can make another script, say `experiment.py`
@@ -62,20 +70,24 @@ config = dict(
     n_workers=1,
     distributed_init_file=None,
     log_verbosity=2,
+    wandb_log_every=10,
 )
 
 output_dir = "./output.tmp"  # will be overwritten by run.py
 
 
 def main():
+    global global_step
+    global_step = 1
     torch.manual_seed(config["seed"] + config["rank"])
     np.random.seed(config["seed"] + config["rank"])
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    def none(*a, **b):
+        pass
+    timer = Timer(verbosity_level=config["log_verbosity"], log_fn=none)
 
-    timer = Timer(verbosity_level=config["log_verbosity"], log_fn=metric)
-
-    if torch.distributed.is_available():
+    if torch.distributed.is_available() and not torch.distributed.is_initialized():
         if config["distributed_init_file"] is None:
             config["distributed_init_file"] = os.path.join(output_dir, "dist_init")
         print(
@@ -115,6 +127,7 @@ def main():
             runavg_model.reset()
 
         train_loader = task.train_iterator(config["optimizer_batch_size"])
+        steps = len(train_loader)
         for i, batch in enumerate(train_loader):
             epoch_frac = epoch + i / len(train_loader)
             lrs = [get_learning_rate(epoch_frac, name) for name in task.parameter_names]
@@ -124,23 +137,23 @@ def main():
                 epoch_metrics.add(metrics)
 
                 # Compute some derived metrics from the raw gradients
-                with timer("batch.reporting.lr", epoch_frac, verbosity=2):
-                    for name, param, grad, lr in zip(task.parameter_names, task.state, grads, lrs):
-                        if np.random.rand() < 0.001:  # with a small probability
-                            tags = {"weight": name.replace("module.", "")}
-                            metric(
-                                "effective_lr",
-                                {
-                                    "epoch": epoch_frac,
-                                    "value": lr / max(l2norm(param).item() ** 2, 1e-8),
-                                },
-                                tags,
-                            )
-                            metric(
-                                "grad_norm",
-                                {"epoch": epoch_frac, "value": l2norm(grad).item()},
-                                tags,
-                            )
+                #with timer("batch.reporting.lr", epoch_frac, verbosity=2):
+                #    for name, param, grad, lr in zip(task.parameter_names, task.state, grads, lrs):
+                #        if np.random.rand() < 0.001:  # with a small probability
+                #            tags = {"weight": name.replace("module.", "")}
+                #            metric(
+                #                "effective_lr",
+                #                {
+                #                    "epoch": epoch_frac,
+                #                    "value": lr / max(l2norm(param).item() ** 2, 1e-8),
+                #                },
+                #                tags,
+                #            )
+                #            metric(
+                #                "grad_norm",
+                #                {"epoch": epoch_frac, "value": l2norm(grad).item()},
+                #                tags,
+                #            )
 
                 if config["optimizer_wd_before_reduce"]:
                     with timer("batch.weight_decay", epoch_frac, verbosity=2):
@@ -176,19 +189,19 @@ def main():
                     # Set 'grads' to the averaged value from the workers
                     bits_communicated += reducer.reduce(send_buffers, grads, memories)
 
-                if config["optimizer_memory"]:
-                    with timer("batch.reporting.compr_err", verbosity=2):
-                        for name, memory, send_bfr in zip(
-                            task.parameter_names, memories, send_buffers
-                        ):
-                            if np.random.rand() < 0.001:
-                                tags = {"weight": name.replace("module.", "")}
-                                rel_compression_error = l2norm(memory) / l2norm(send_bfr)
-                                metric(
-                                    "rel_compression_error",
-                                    {"epoch": epoch_frac, "value": rel_compression_error.item()},
-                                    tags,
-                                )
+                #if config["optimizer_memory"]:
+                #    with timer("batch.reporting.compr_err", verbosity=2):
+                #        for name, memory, send_bfr in zip(
+                #            task.parameter_names, memories, send_buffers
+                #        ):
+                #            if np.random.rand() < 0.001:
+                #                tags = {"weight": name.replace("module.", "")}
+                #                rel_compression_error = l2norm(memory) / l2norm(send_bfr)
+                #                metric(
+                #                    "rel_compression_error",
+                #                    {"epoch": epoch_frac, "value": rel_compression_error.item()},
+                #                    tags,
+                #                )
 
                 if not config["optimizer_wd_before_reduce"]:
                     with timer("batch.wd", epoch_frac, verbosity=2):
@@ -226,32 +239,36 @@ def main():
                 with timer("batch.update_runavg", epoch_frac, verbosity=2):
                     runavg_model.add(task.state_dict())
 
-                if config["optimizer_memory"]:
-                    with timer("batch.reporting.memory_norm", epoch_frac, verbosity=2):
-                        if np.random.rand() < 0.001:
-                            sum_of_sq = 0.0
-                            for parameter_name, memory in zip(task.parameter_names, memories):
-                                tags = {"weight": parameter_name.replace("module.", "")}
-                                sq_norm = torch.sum(memory ** 2)
-                                sum_of_sq += torch.sqrt(sq_norm)
-                                metric(
-                                    "memory_norm",
-                                    {"epoch": epoch_frac, "value": torch.sqrt(sq_norm).item()},
-                                    tags,
-                                )
-                            metric(
-                                "compression_error",
-                                {"epoch": epoch_frac, "value": torch.sqrt(sum_of_sq).item()},
-                            )
+                #if config["optimizer_memory"]:
+                #    with timer("batch.reporting.memory_norm", epoch_frac, verbosity=2):
+                #        if np.random.rand() < 0.001:
+                #            sum_of_sq = 0.0
+                #            for parameter_name, memory in zip(task.parameter_names, memories):
+                #                tags = {"weight": parameter_name.replace("module.", "")}
+                #                sq_norm = torch.sum(memory ** 2)
+                #                sum_of_sq += torch.sqrt(sq_norm)
+                #                metric(
+                #                    "memory_norm",
+                #                    {"epoch": epoch_frac, "value": torch.sqrt(sq_norm).item()},
+                #                    tags,
+                #                )
+                #            metric(
+                #                "compression_error",
+                #                {"epoch": epoch_frac, "value": torch.sqrt(sum_of_sq).item()},
+                #            )
+                if global_step % config["wandb_log_every"] == 1:
+                    wandb.log({"epoch": epoch_frac, "bits_communicated": bits_communicated}, step=global_step, commit=False)
+                    wandb.log({f'train/{k}': v for k,v in metrics.items()}, step=global_step, commit=(i+1)<steps)
+            global_step += 1
 
         with timer("epoch_metrics.collect", epoch + 1.0, verbosity=2):
             epoch_metrics.reduce()
             for key, value in epoch_metrics.value().items():
-                metric(
-                    key,
-                    {"value": value, "epoch": epoch + 1.0, "bits": bits_communicated},
-                    tags={"split": "train"},
-                )
+                #metric(
+                #    key,
+                #    {"value": value, "epoch": epoch + 1.0, "bits": bits_communicated},
+                #    tags={"split": "train"},
+                #)
                 metric(
                     f"last_{key}",
                     {"value": value, "epoch": epoch + 1.0, "bits": bits_communicated},
@@ -266,6 +283,7 @@ def main():
                     {"value": value, "epoch": epoch + 1.0, "bits": bits_communicated},
                     tags={"split": "test"},
                 )
+            wandb.log({f'test/{k}': v for k,v in test_stats.items()}, step=global_step-1, commit=False)
 
         with timer("test.runavg", epoch):
             test_stats = task.test(state_dict=runavg_model.value())
@@ -275,6 +293,7 @@ def main():
                     {"value": value, "epoch": epoch + 1.0, "bits": bits_communicated},
                     tags={"split": "test"},
                 )
+            wandb.log({f'test_runavg/{k}': v for k,v in test_stats.items()}, step=global_step-1)
 
         if epoch in config["checkpoints"] and torch.distributed.get_rank() == 0:
             with timer("checkpointing"):
@@ -286,9 +305,9 @@ def main():
                 )
                 # Save running average model @TODO
 
-        print(timer.summary())
-        if config["rank"] == 0:
-            timer.save_summary(os.path.join(output_dir, "timer_summary.json"))
+        #print(timer.summary())
+        #if config["rank"] == 0:
+        #    timer.save_summary(os.path.join(output_dir, "timer_summary.json"))
 
     info({"state.progress": 1.0})
 
@@ -372,7 +391,8 @@ def replace_grad_by_momentum(grad, momentum):
 
 def get_reducer(device, timer):
     """Configure the reducer from the config"""
-    if config["optimizer_reducer"] in ["RankKReducer"]:
+    if config["optimizer_reducer"] in ["RankKReducer", "RankKCNatReducer"]:
+        print("Using PowerSGD")
         return getattr(gradient_reducers, config["optimizer_reducer"])(
             random_seed=config["seed"],
             device=device,
@@ -403,11 +423,24 @@ def get_reducer(device, timer):
             rank=config["optimizer_reducer_rank"],
         )
     elif (
+        config["optimizer_reducer"] == "BlockTopKCNatReducer"
+    ):
+        print("Using BlockTopK")
+        return getattr(gradient_reducers, config["optimizer_reducer"])(
+            random_seed=config["seed"],
+            device=device,
+            timer=timer,
+            compression=config["optimizer_reducer_compression"],
+            block_size=config["block_size"],
+        )
+    elif (
         config["optimizer_reducer"] == "GlobalTopKReducer"
         or config["optimizer_reducer"] == "TopKReducer"
         or config["optimizer_reducer"] == "UniformRandomSparseBlockReducer"
         or config["optimizer_reducer"] == "UniformRandomSparseReducer"
+        or config["optimizer_reducer"] == "TopKCNatReducer"
     ):
+        print("Using TopK")
         return getattr(gradient_reducers, config["optimizer_reducer"])(
             random_seed=config["seed"],
             device=device,

@@ -6,11 +6,98 @@ from typing import List
 
 import numpy as np
 import torch
+import cupy
+from torch.utils.dlpack import to_dlpack
+from torch.utils.dlpack import from_dlpack
+from math import ceil
+
+#from torch.utils.cpp_extension import load
+#cnat = load(
+#    'cnat', ['cnat_cuda.cpp', 'cnat_cuda_kernel.cu'])
 
 try:
     import bit2byte
 except ImportError:
     pass
+
+encoding_to_sign_and_exp = torch.tensor(
+       [  0,  18,  19,  20,  21,  22,  23,  24,  25,  26,  27,  28,  29,  30,
+         31,  32,  33,  34,  35,  36,  37,  38,  39,  40,  41,  42,  43,  44,
+         45,  46,  47,  48,  49,  50,  51,  52,  53,  54,  55,  56,  57,  58,
+         59,  60,  61,  62,  63,  64,  65,  66,  67,  68,  69,  70,  71,  72,
+         73,  74,  75,  76,  77,  78,  79,  80,  81,  82,  83,  84,  85,  86,
+         87,  88,  89,  90,  91,  92,  93,  94,  95,  96,  97,  98,  99, 100,
+        101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114,
+        115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128,
+        129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142,
+        143, 144, 256, 274, 275, 276, 277, 278, 279, 280, 281, 282, 283, 284,
+        285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 295, 296, 297, 298,
+        299, 300, 301, 302, 303, 304, 305, 306, 307, 308, 309, 310, 311, 312,
+        313, 314, 315, 316, 317, 318, 319, 320, 321, 322, 323, 324, 325, 326,
+        327, 328, 329, 330, 331, 332, 333, 334, 335, 336, 337, 338, 339, 340,
+        341, 342, 343, 344, 345, 346, 347, 348, 349, 350, 351, 352, 353, 354,
+        355, 356, 357, 358, 359, 360, 361, 362, 363, 364, 365, 366, 367, 368,
+        369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 379, 380, 381, 382,
+        383, 384, 385, 386, 387, 388, 389, 390, 391, 392, 393, 394, 395, 396,
+        397, 398, 399, 400], device='cuda', dtype=torch.int32)
+
+sign_and_exp_to_encoding = torch.tensor(
+       [  0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+          0,   0,   0,   0,   1,   2,   3,   4,   5,   6,   7,   8,   9,  10,
+         11,  12,  13,  14,  15,  16,  17,  18,  19,  20,  21,  22,  23,  24,
+         25,  26,  27,  28,  29,  30,  31,  32,  33,  34,  35,  36,  37,  38,
+         39,  40,  41,  42,  43,  44,  45,  46,  47,  48,  49,  50,  51,  52,
+         53,  54,  55,  56,  57,  58,  59,  60,  61,  62,  63,  64,  65,  66,
+         67,  68,  69,  70,  71,  72,  73,  74,  75,  76,  77,  78,  79,  80,
+         81,  82,  83,  84,  85,  86,  87,  88,  89,  90,  91,  92,  93,  94,
+         95,  96,  97,  98,  99, 100, 101, 102, 103, 104, 105, 106, 107, 108,
+        109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122,
+        123, 124, 125, 126, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127,
+        127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127,
+        127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127,
+        127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127,
+        127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127,
+        127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127,
+        127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127,
+        127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127,
+        127, 127, 127, 127, 128, 128, 128, 128, 128, 128, 128, 128, 128, 128,
+        128, 128, 128, 128, 128, 128, 128, 128, 129, 130, 131, 132, 133, 134,
+        135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148,
+        149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162,
+        163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176,
+        177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190,
+        191, 192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204,
+        205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218,
+        219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232,
+        233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246,
+        247, 248, 249, 250, 251, 252, 253, 254, 255, 255, 255, 255, 255, 255,
+        255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+        255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+        255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+        255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+        255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+        255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+        255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+        255, 255, 255, 255, 255, 255, 255, 255], device='cuda', dtype=torch.uint8)
+
+def cnat_compress(tensor):
+    cupy_tensor = cupy.fromDlpack(to_dlpack(tensor))
+    tensor_cast = cupy_tensor.view(cupy.int32)
+    mantissa = tensor_cast & cupy.int32(0b00000000011111111111111111111111)
+    exp_add_one = mantissa > cupy.random.randint(low=0, high=0b00000000011111111111111111111111,
+                                                 size=cupy_tensor.shape, dtype=cupy.int32)
+    sign_exp = cupy.right_shift(tensor_cast, 23)
+    sign_exp = cupy.where(exp_add_one, sign_exp + 1, sign_exp)
+    sign_exp = from_dlpack(sign_exp.toDlpack()).long()
+    return sign_and_exp_to_encoding[sign_exp]
+
+def cnat_decompress(compressed_tensor):
+    sign_exp = encoding_to_sign_and_exp[compressed_tensor.long()]
+    cupy_de = cupy.fromDlpack(to_dlpack(sign_exp))
+    tensor = cupy.left_shift(cupy_de, 23).view(cupy.float32)
+    return from_dlpack(tensor.toDlpack())
+
+
 
 
 class Reducer:
@@ -156,6 +243,56 @@ class SignReducer(Reducer):
 
         return bits_communicated
 
+class CNatReducer(Reducer):
+    """
+    Optimizations:
+    pack all weights in one big vector
+    turn that to bits
+    """
+    def reduce(self, grad_in, grad_out, memory_out):
+        """
+        Reduce gradients between the workers in place
+        :param grad_in: dictionary
+        :param grad_out: dictionary
+        :param memory_out: dictionary
+        """
+        bits_communicated = 0
+
+        with self.timer("reduce.flatpack"):
+            flatgrad = TensorBuffer(grad_in)
+
+        with self.timer("reduce.compress", verbosity=2):
+            my_bytes = cnat_compress(flatgrad.buffer.contiguous())
+
+        with self.timer("reduce.gather", verbosity=2):
+            if self.n_workers > 1:
+                all_bytes = [torch.empty_like(my_bytes) for i in range(self.n_workers)]
+                h1 = all_gather(all_bytes, my_bytes)
+            else:
+                all_bytes = [my_bytes]
+
+        bits_communicated += n_bits(my_bytes)  # for the norm vector, being optimistic here
+
+        with self.timer("reduce.decompress", verbosity=2):
+            flatsigns = []
+            for their_bytes in all_bytes:
+                uncompressed = cnat_decompress(their_bytes)
+                flatsigns.append(uncompressed)
+
+        with self.timer("reduce.average", verbosity=2):
+            avg_flatsign = torch.stack(flatsigns).sum(dim=0) / self.n_workers
+            flatgrad.buffer = avg_flatsign
+
+            for out, avg in zip(grad_out, flatgrad):
+                out.data[:] = avg
+
+        #with self.timer("reduce.memory", verbosity=2):
+        #    for tensor, mem in zip(grad_in, memory_out):
+        #        mem.data[:] = tensor
+        #        mem.data.add_(tensor.sign())
+
+        return bits_communicated
+
 
 class SignSGDwithMajorityVoteReducer(Reducer):
     def reduce(self, grad_in, grad_out, memory_out):
@@ -275,6 +412,190 @@ class TopKReducer(Reducer):
                     values = val[start:end]
                     # out.view(-1)[pos].add_(1.0 / self.n_workers, val)
                     out.view(-1)[positions.long()] += values / self.n_workers
+
+        return bits_communicated
+
+class TopKCNatReducer(Reducer):
+    """
+    Use same amount as rank-based
+    """
+    def __init__(self, random_seed, device, timer, compression=1 / 244):
+        super().__init__(random_seed, device, timer)
+        self.compression = compression
+
+    def reduce(self, grad_in, grad_out, memory_out):
+        """
+        Reduce gradients between the workers in place
+        :param grad_in: dictionary
+        :param grad_out: dictionary
+        :param memory_out: dictionary
+        """
+        bits_communicated = 0
+
+        with self.timer("reduce.flatpack", verbosity=2):
+            # Find the size of a flatpacked gradient
+            flatgrad_size = 0
+            tensor_idx = [0]
+            for tensor in grad_in:
+                top_size = max(1, int(0.5 * self.compression * tensor.nelement()))
+                flatgrad_size += top_size
+                tensor_idx.append(tensor_idx[-1] + top_size)
+            flatgrad_start_idx = tensor_idx[:-1]
+            flatgrad_end_idx = tensor_idx[1:]
+            flat_values = torch.empty(flatgrad_size, device=self.device, dtype=torch.uint8)
+            flat_positions = torch.empty(flatgrad_size, device=self.device, dtype=torch.int)
+
+        with self.timer("reduce.topk", verbosity=2):
+            for tensor, start, end in zip(grad_in, flatgrad_start_idx, flatgrad_end_idx):
+                top_size = max(1, int(0.5 * self.compression * tensor.nelement()))
+                _, positions = torch.topk(tensor.view(-1).abs(), top_size, sorted=False)
+                values = cnat_compress(tensor.view(-1)[positions].contiguous())
+                flat_values[start:end] = values
+                flat_positions[start:end] = positions
+
+        with self.timer("reduce.memory", verbosity=2):
+            for tensor, mem, start, end in zip(
+                grad_in, memory_out, flatgrad_start_idx, flatgrad_end_idx
+            ):
+                positions = flat_positions[start:end]
+                mem.data[:] = tensor
+                mem.view(-1)[positions.long()] -= cnat_decompress(flat_values[start:end])
+
+        with self.timer("reduce.gather", verbosity=2):
+            if self.n_workers > 1:
+                worker_values = [torch.empty_like(flat_values) for i in range(self.n_workers)]
+                worker_positions = [torch.empty_like(flat_positions) for i in range(self.n_workers)]
+                h1 = all_gather(worker_values, flat_values, async_op=True)
+                h2 = all_gather(worker_positions, flat_positions, async_op=True)
+                h1.wait()
+                h2.wait()
+            else:
+                worker_values = [flat_values]
+                worker_positions = [flat_positions]
+            bits_communicated += n_bits(flat_values) + n_bits(flat_positions)
+
+        with self.timer("reduce.combine", verbosity=2):
+            for tensor, out, start, end in zip(
+                grad_in, grad_out, flatgrad_start_idx, flatgrad_end_idx
+            ):
+                out.data[:] = 0
+                for pos, val in zip(worker_positions, worker_values):
+                    positions = pos[start:end]
+                    values = cnat_decompress(val[start:end])
+                    # out.view(-1)[pos].add_(1.0 / self.n_workers, val)
+                    out.view(-1)[positions.long()] += (values / self.n_workers)
+
+        return bits_communicated
+
+
+class BlockTopKCNatReducer(Reducer):
+    """
+    Use same amount as rank-based
+    """
+    def __init__(self, random_seed, device, timer, compression=1 / 244, block_size=256):
+        super().__init__(random_seed, device, timer)
+        self.compression = compression
+        self.block_size = block_size
+
+    def reduce(self, grad_in, grad_out, memory_out):
+        """
+        Reduce gradients between the workers in place
+        :param grad_in: dictionary
+        :param grad_out: dictionary
+        :param memory_out: dictionary
+        """
+        bits_communicated = 0
+
+        def get_block_topk_size(numel, compress_ratio, block_size):
+            remaining = numel % block_size
+            num_blocks = numel//block_size
+            if not num_blocks: # take all
+                return numel
+            take_blocks = ceil(num_blocks * compress_ratio) # at least 1
+            return take_blocks * block_size + remaining
+
+        with self.timer("reduce.flatpack", verbosity=2):
+            # Find the size of a flatpacked gradient
+            flatgrad_size = 0
+            tensor_idx = [0]
+            for tensor in grad_in:
+                # top_size = max(1, int(0.5 * self.compression * tensor.nelement()))
+                top_size = get_block_topk_size(tensor.nelement(), 0.5*self.compression, self.block_size)
+                flatgrad_size += top_size
+                tensor_idx.append(tensor_idx[-1] + top_size)
+            flatgrad_start_idx = tensor_idx[:-1]
+            flatgrad_end_idx = tensor_idx[1:]
+            flat_values = torch.empty(flatgrad_size, device=self.device, dtype=torch.uint8)
+            flat_positions = torch.empty(flatgrad_size, device=self.device, dtype=torch.int)
+
+        def block_topk(grad, compress_ratio=0.5, block_size=256):
+            numel = grad.numel()
+            num_blocks = numel//block_size
+            if not num_blocks: # take all
+                return torch.arange(grad.numel()), 1
+#                return grad
+            tensor = grad.clone().detach()
+            if numel % block_size:
+                new_grad = grad[:block_size*num_blocks].view([-1, block_size])
+            else:
+                new_grad = grad.view([-1, block_size])
+            blocks = torch.sum(new_grad.abs(), dim=1)
+            k = ceil(num_blocks * compress_ratio) # at least 1
+            _, i = blocks.sort()
+            z = num_blocks - k
+            idx = i[:z]
+            blocks[idx] = 0
+            #k = min(num_blocks, 1+round(num_blocks * (1-compress_ratio)))
+            #threshold, _ = torch.kthvalue(blocks, num_blocks+1-k)
+            #blocks_to_choose = torch.ge(blocks, threshold)
+            indices = torch.arange(num_blocks, device=grad.device)
+            sp = torch.sparse.FloatTensor(torch.stack((indices, indices)), blocks) # diagonal
+            ar = torch.ones_like(grad)
+            ar[:block_size*num_blocks] = torch.sparse.mm(sp, ar[:block_size*num_blocks].view([-1, block_size])).flatten()
+            return ar.nonzero().flatten().long(), k
+#            tensor[:block_size*num_blocks] = torch.sparse.mm(sp, new_grad).view(-1)
+#            tensor[block_size*num_blocks:] = 0
+#            return tensor
+
+        with self.timer("reduce.topk", verbosity=2):
+            for tensor, start, end in zip(grad_in, flatgrad_start_idx, flatgrad_end_idx):
+                positions, k = block_topk(tensor.flatten(), 0.5 * self.compression, self.block_size)
+                bits_communicated += n_bits(torch.empty([k], device=self.device, dtype=torch.int))
+                values = cnat_compress(tensor.view(-1)[positions].contiguous())
+                flat_values[start:end] = values
+                flat_positions[start:end] = positions
+
+        with self.timer("reduce.memory", verbosity=2):
+            for tensor, mem, start, end in zip(
+                grad_in, memory_out, flatgrad_start_idx, flatgrad_end_idx
+            ):
+                positions = flat_positions[start:end]
+                mem.data[:] = tensor
+                mem.view(-1)[positions.long()] -= cnat_decompress(flat_values[start:end])
+
+        with self.timer("reduce.gather", verbosity=2):
+            if self.n_workers > 1:
+                worker_values = [torch.empty_like(flat_values) for i in range(self.n_workers)]
+                worker_positions = [torch.empty_like(flat_positions) for i in range(self.n_workers)]
+                h1 = all_gather(worker_values, flat_values, async_op=True)
+                h2 = all_gather(worker_positions, flat_positions, async_op=True)
+                h1.wait()
+                h2.wait()
+            else:
+                worker_values = [flat_values]
+                worker_positions = [flat_positions]
+            bits_communicated += n_bits(flat_values)
+
+        with self.timer("reduce.combine", verbosity=2):
+            for tensor, out, start, end in zip(
+                grad_in, grad_out, flatgrad_start_idx, flatgrad_end_idx
+            ):
+                out.data[:] = 0
+                for pos, val in zip(worker_positions, worker_values):
+                    positions = pos[start:end]
+                    values = cnat_decompress(val[start:end])
+                    # out.view(-1)[pos].add_(1.0 / self.n_workers, val)
+                    out.view(-1)[positions.long()] += (values / self.n_workers)
 
         return bits_communicated
 
